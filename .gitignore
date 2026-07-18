@@ -2,3 +2,20 @@
 .env
 .env.*
 !.env.example
+
+# Flutter and Dart generated files
+.dart_tool/
+.packages
+.pub/
+build/
+coverage/
+*.iml
+.idea/
+.metadata
+
+# Platform-generated directories
+android/.gradle/
+android/local.properties
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/ephemeral/
