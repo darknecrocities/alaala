@@ -9,6 +9,7 @@ class Person {
     this.lastSeen,
     this.embeddings = const [],
     this.notes = const [],
+    this.photoPath = '',
   });
 
   final String name;
@@ -20,6 +21,7 @@ class Person {
   final DateTime? lastSeen;
   final List<double> embeddings;
   final List<String> notes;
+  final String photoPath;
 
   Person copyWith({
     String? name,
@@ -31,6 +33,7 @@ class Person {
     DateTime? lastSeen,
     List<double>? embeddings,
     List<String>? notes,
+    String? photoPath,
   }) {
     return Person(
       name: name ?? this.name,
@@ -42,6 +45,7 @@ class Person {
       lastSeen: lastSeen ?? this.lastSeen,
       embeddings: embeddings ?? this.embeddings,
       notes: notes ?? this.notes,
+      photoPath: photoPath ?? this.photoPath,
     );
   }
 }

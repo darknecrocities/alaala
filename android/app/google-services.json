@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "460442138245",
+    "project_id": "openai-dee53",
+    "storage_bucket": "openai-dee53.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:460442138245:android:f394cc09e7792cd2fb9bec",
+        "android_client_info": {
+          "package_name": "com.company.alaala"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAkFOWKJM3vhCOBSUpdtQ-g79dT4idesio"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

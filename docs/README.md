@@ -6,6 +6,7 @@ This directory is the project’s source of truth. It describes the implemented 
 | --- | --- |
 | [Product brief](product.md) | Who Ala-ala serves, why it exists, and the MVP boundary |
 | [Architecture](architecture.md) | Flutter structure, state ownership, and key data flows |
+| [AI & retrieval](ai-and-retrieval.md) | Keyword retrieval, Local/Gemini/OpenAI behaviour, data flow, and safety limits |
 | [Privacy & safety](privacy-and-safety.md) | Current data handling and requirements before real-world use |
 | [Development guide](development.md) | Setup, verification, conventions, and known limitations |
 

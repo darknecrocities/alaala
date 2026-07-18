@@ -37,6 +37,7 @@ The [`docs/`](docs/README.md) directory is the source of truth for product inten
 | --- | --- |
 | [Product brief](docs/product.md) | Audience, problem, principles, and current scope |
 | [Architecture](docs/architecture.md) | App structure, state flow, and module responsibilities |
+| [AI & retrieval](docs/ai-and-retrieval.md) | RAG pipeline, Local/Gemini/OpenAI behaviour, and safety limits |
 | [Privacy & safety](docs/privacy-and-safety.md) | Data classification and production requirements |
 | [Development guide](docs/development.md) | Local setup, checks, and current known limitations |
 

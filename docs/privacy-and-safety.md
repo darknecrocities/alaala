@@ -2,9 +2,9 @@
 
 ## Current state
 
-The shipped source is a local, in-memory demo. It has no network client, account system, persistence layer, camera integration, or functional facial-recognition implementation. The people and memories in [`MemoryStore`](../lib/services/memory_store.dart) are illustrative seed data.
+The current source contains Firebase authentication, one-time Firestore reads and writes, direct cloud-AI request code, local language preferences, and sample seed data. It also contains prototype face-scanning and AI-generated-memory flows. The people and memories in [`MemoryStore`](../lib/services/memory_store.dart) are still illustrative seed data and are mixed into the active store.
 
-The repository includes [`.env.example`](../.env.example) only as a future configuration template. Provider credentials must not be committed or embedded in mobile builds.
+The client currently attempts to load provider keys from `.env` as a Flutter asset. This is unsafe: assets packaged into a mobile app can be extracted. Provider credentials must not be committed, embedded, or used directly from mobile builds. See [AI & retrieval](ai-and-retrieval.md) for the current data flow.
 
 ## Sensitive information in the intended product
 

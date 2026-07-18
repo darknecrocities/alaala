@@ -1,43 +1,267 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:camera/camera.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../models/person.dart';
 import '../models/memory.dart';
 import '../services/memory_store.dart';
 import '../widgets/polaroid_frame.dart';
 import '../widgets/custom_card.dart';
+import '../services/ai_client.dart';
+import 'ml_face_scanner_screen.dart';
 
 class LensScreen extends StatefulWidget {
-  const LensScreen({super.key});
+  final Function(int)? onNavigateToTab;
+  const LensScreen({super.key, this.onNavigateToTab});
 
   @override
   State<LensScreen> createState() => _LensScreenState();
 }
 
 class _LensScreenState extends State<LensScreen> {
-  bool _knownMode = true;
-  String _simulatedSpeechResponse = '';
-  Timer? _speechResetTimer;
   int _activePersonIndex = 0;
+  Person? _lockedPerson;
+  Timer? _faceLostTimer;
+
+  final Set<String> _generatedPeople = {};
+  bool _isGeneratingMemory = false;
+
+  // Real Camera & ML Kit Bounding Box Properties
+  CameraController? _cameraController;
+  FaceDetector? _faceDetector;
+  bool _isCameraInitialized = false;
+  bool _isDetecting = false;
+  Rect? _detectedFaceRect;
+  Size? _cameraImageSize;
 
   @override
-  void dispose() {
-    _speechResetTimer?.cancel();
-    super.dispose();
-  }
-
-  void _triggerVoiceQuestion(String question, String answer) {
-    setState(() {
-      _simulatedSpeechResponse = '🗣️ "$question"\n\n🤖 $answer';
-    });
-    _speechResetTimer?.cancel();
-    _speechResetTimer = Timer(const Duration(seconds: 7), () {
-      if (mounted) {
-        setState(() {
-          _simulatedSpeechResponse = '';
-        });
+  void initState() {
+    super.initState();
+    _initializeCameraAndDetector();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final store = MemoryStore.instance;
+      if (store.people.isNotEmpty) {
+        _checkAndGenerateMemory(store.people[_activePersonIndex]);
       }
     });
   }
+
+  @override
+  void dispose() {
+    _faceLostTimer?.cancel();
+    _cameraController?.stopImageStream();
+    _cameraController?.dispose();
+    _faceDetector?.close();
+    super.dispose();
+  }
+
+  Future<void> _initializeCameraAndDetector() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        debugPrint('No available cameras found.');
+        return;
+      }
+
+      // Default to back camera for viewing people, otherwise front
+      final camera = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+
+      _cameraController = CameraController(
+        camera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+
+      await _cameraController!.initialize();
+
+      _faceDetector = FaceDetector(
+        options: FaceDetectorOptions(
+          performanceMode: FaceDetectorMode.fast,
+          enableTracking: true,
+        ),
+      );
+
+      if (mounted) {
+        setState(() {
+          _isCameraInitialized = true;
+        });
+      }
+
+      // Stream frames to process detected faces
+      _cameraController!.startImageStream((CameraImage image) {
+        _processCameraFrame(image);
+      });
+    } catch (e) {
+      debugPrint('Camera/ML Kit Initialization Error: $e');
+    }
+  }
+
+  Uint8List _convertYUV420ToNV21(CameraImage image) {
+    final width = image.width;
+    final height = image.height;
+    
+    final yPlane = image.planes[0];
+    final uPlane = image.planes[1];
+    final vPlane = image.planes[2];
+    
+    final yBuffer = yPlane.bytes;
+    final uBuffer = uPlane.bytes;
+    final vBuffer = vPlane.bytes;
+    
+    final yRowStride = yPlane.bytesPerRow;
+    final yPixelStride = yPlane.bytesPerPixel ?? 1;
+    
+    final uRowStride = uPlane.bytesPerRow;
+    final uPixelStride = uPlane.bytesPerPixel ?? 1;
+    
+    final vRowStride = vPlane.bytesPerRow;
+    final vPixelStride = vPlane.bytesPerPixel ?? 1;
+    
+    final outSize = width * height + (width * height) ~/ 2;
+    final out = Uint8List(outSize);
+    
+    var outOffset = 0;
+    for (var y = 0; y < height; y++) {
+      var rowOffset = y * yRowStride;
+      for (var x = 0; x < width; x++) {
+        out[outOffset++] = yBuffer[rowOffset + x * yPixelStride];
+      }
+    }
+    
+    final uvWidth = width ~/ 2;
+    final uvHeight = height ~/ 2;
+    
+    for (var y = 0; y < uvHeight; y++) {
+      var uRowOffset = y * uRowStride;
+      var vRowOffset = y * vRowStride;
+      for (var x = 0; x < uvWidth; x++) {
+        out[outOffset++] = vBuffer[vRowOffset + x * vPixelStride];
+        out[outOffset++] = uBuffer[uRowOffset + x * uPixelStride];
+      }
+    }
+    
+    return out;
+  }
+
+  Future<void> _processCameraFrame(CameraImage image) async {
+    if (_isDetecting || _faceDetector == null || !mounted) return;
+    _isDetecting = true;
+
+    try {
+      final bytes = _convertYUV420ToNV21(image);
+      final sensorOrientation = _cameraController!.description.sensorOrientation;
+      
+      final InputImageMetadata metadata = InputImageMetadata(
+        size: Size(image.width.toDouble(), image.height.toDouble()),
+        rotation: InputImageRotationValue.fromRawValue(sensorOrientation) ?? InputImageRotation.rotation90deg,
+        format: InputImageFormat.nv21,
+        bytesPerRow: image.width,
+      );
+
+      final inputImage = InputImage.fromBytes(
+        bytes: bytes,
+        metadata: metadata,
+      );
+
+      final List<Face> faces = await _faceDetector!.processImage(inputImage);
+
+      if (mounted) {
+        setState(() {
+          _cameraImageSize = Size(image.width.toDouble(), image.height.toDouble());
+          if (faces.isNotEmpty) {
+            _detectedFaceRect = faces.first.boundingBox;
+            _faceLostTimer?.cancel();
+            _faceLostTimer = null;
+
+            final store = MemoryStore.instance;
+            if (store.people.isNotEmpty) {
+              if (_lockedPerson == null) {
+                final trackingId = faces.first.trackingId ?? 0;
+                _activePersonIndex = trackingId % store.people.length;
+                _lockedPerson = store.people[_activePersonIndex];
+              }
+              _checkAndGenerateMemory(_lockedPerson!);
+            }
+          } else {
+            _detectedFaceRect = null;
+            _faceLostTimer ??= Timer(const Duration(milliseconds: 1500), () {
+              if (mounted) {
+                setState(() {
+                  _lockedPerson = null;
+                  _faceLostTimer = null;
+                });
+              }
+            });
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('Face detection parsing error: $e');
+    } finally {
+      _isDetecting = false;
+    }
+  }
+
+  Future<void> _checkAndGenerateMemory(Person person) async {
+    if (_generatedPeople.contains(person.name) || _isGeneratingMemory) return;
+
+    setState(() {
+      _isGeneratingMemory = true;
+    });
+
+    try {
+      final store = MemoryStore.instance;
+      final rawResponse = await AIClient.instance.generateMemoryForPerson(
+        personName: person.name,
+        relationship: person.relationship,
+        details: person.detail.isNotEmpty ? person.detail : person.favoriteFood,
+        userName: store.userName,
+        preferredModel: store.activeModel,
+      );
+
+      // Clean markdown code blocks from LLM if any
+      String cleaned = rawResponse.trim();
+      if (cleaned.startsWith('```')) {
+        final lines = cleaned.split('\n');
+        if (lines.length > 2) {
+          cleaned = lines.sublist(1, lines.length - 1).join('\n').trim();
+        }
+      }
+
+      final Map<String, dynamic> data = jsonDecode(cleaned);
+      
+      final newMemory = Memory(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        personName: person.name,
+        title: data['title'] ?? 'Magandang alaala',
+        detail: data['detail'] ?? 'Isang masayang alaala kasama si ${person.name}.',
+        category: data['category'] ?? 'Pamilya',
+        when: 'Ngayong araw',
+        timestamp: DateTime.now(),
+        location: data['location'] ?? 'Tahanan',
+        emotion: data['emotion'] ?? 'Masaya',
+        tags: List<String>.from(data['tags'] ?? ['pamilya']),
+      );
+
+      await store.addMemory(newMemory);
+    } catch (e) {
+      debugPrint('Memory generation error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isGeneratingMemory = false;
+          _generatedPeople.add(person.name);
+        });
+      }
+    }
+  }
+
+
 
   void _showTimelineSheet(BuildContext context, Person person, List<Memory> personMemories) {
     showModalBottomSheet(
@@ -69,20 +293,52 @@ class _LensScreenState extends State<LensScreen> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                Text(
-                  '${person.name} (${person.relationship})',
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF383229),
-                  ),
-                ),
-                Text(
-                  'Mga pinagsaluhang alaala · ${person.visits} na pagbisita',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF8B8276),
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${person.name} (${person.relationship})',
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF2C1E1B),
+                            ),
+                          ),
+                          Text(
+                            'Mga pinagsaluhang alaala · ${person.visits} na pagbisita',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF8B8276),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (widget.onNavigateToTab != null)
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFD4A359),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        icon: const Icon(Icons.people_rounded, size: 16),
+                        label: Text(
+                          MemoryStore.instance.translate(tagalog: 'Tingnan ang Profile', english: 'View Profile'),
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                        onPressed: () {
+                          Navigator.pop(context); // close sheet
+                          widget.onNavigateToTab!(3); // switch to Family Profile tab!
+                        },
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 24),
                 if (personMemories.isEmpty)
@@ -142,7 +398,7 @@ class _LensScreenState extends State<LensScreen> {
                               style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
-                                color: Color(0xFF383229),
+                                color: Color(0xFF2C1E1B),
                               ),
                             ),
                             const SizedBox(height: 4),
@@ -192,42 +448,28 @@ class _LensScreenState extends State<LensScreen> {
   }
 
   Future<void> _showRegistrationSheet(BuildContext context) async {
-    final result = await showModalBottomSheet<Person>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFFFFFDF9), // cream
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (_) => const RegistrationBottomSheet(),
+    final result = await Navigator.of(context).push<Person>(
+      MaterialPageRoute(builder: (_) => const MLFaceScannerScreen()),
     );
 
     if (result != null && context.mounted) {
-      MemoryStore.instance.registerPerson(result);
       setState(() {
-        _knownMode = true;
         _activePersonIndex = MemoryStore.instance.people.length - 1;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Matagumpay na nairehistro si ${result.name}!'),
-          backgroundColor: const Color(0xFF5FA86A),
-        ),
-      );
+      _checkAndGenerateMemory(result);
     }
   }
+
+
 
   @override
   Widget build(BuildContext context) {
     final store = MemoryStore.instance;
-    final people = store.people;
 
-    // Determine current person in simulation
-    final activePerson = (people.isNotEmpty && _activePersonIndex < people.length)
-        ? people[_activePersonIndex]
-        : null;
+    // Determine current person from stable face lock
+    final activePerson = _lockedPerson;
 
-    final latestMemory = activePerson != null
+    final latestMemory = (activePerson != null && store.memories.isNotEmpty)
         ? store.memories.firstWhere((m) => m.personName == activePerson.name, orElse: () => store.memories.first)
         : null;
 
@@ -235,25 +477,76 @@ class _LensScreenState extends State<LensScreen> {
         ? store.memories.where((m) => m.personName == activePerson.name).toList()
         : <Memory>[];
 
+    final displayRelation = (activePerson != null) ? () {
+      final rel = activePerson.relationship.toLowerCase();
+      if (rel == 'anak') {
+        return store.translate(tagalog: 'Anak', english: 'Child');
+      } else if (rel == 'doktor' || rel == 'doctor') {
+        return store.translate(tagalog: 'Doktor', english: 'Doctor');
+      } else if (rel == 'caregiver') {
+        return store.translate(tagalog: 'Tagapag-alaga', english: 'Caregiver');
+      }
+      return activePerson.relationship;
+    }() : '';
+
     return ListenableBuilder(
       listenable: store,
       builder: (context, child) {
+        final screenSize = MediaQuery.of(context).size;
+        
+        double cardLeft;
+        double cardTop;
+        
+        if (_detectedFaceRect != null && _cameraImageSize != null) {
+          final imageSize = _cameraImageSize!;
+          final sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
+          
+          final isRotated = sensorOrientation == 90 || sensorOrientation == 270;
+          final double srcWidth = isRotated ? imageSize.height : imageSize.width;
+          final double srcHeight = isRotated ? imageSize.width : imageSize.height;
+
+          final double scaleX = screenSize.width / srcWidth;
+          final double scaleY = screenSize.height / srcHeight;
+
+          double left = _detectedFaceRect!.left * scaleX;
+          double top = _detectedFaceRect!.top * scaleY;
+          double width = _detectedFaceRect!.width * scaleX;
+          double height = _detectedFaceRect!.height * scaleY;
+
+          if (_cameraController?.description.lensDirection == CameraLensDirection.front) {
+            left = screenSize.width - left - width;
+          }
+
+          final centerX = left + (width / 2);
+          final centerY = top + (height / 2);
+
+          // Center exactly on the face center without clamps
+          cardLeft = centerX - 121;
+          cardTop = centerY - 95;
+        } else {
+          // If no face is detected, set default position (not rendered, but initialized)
+          cardLeft = (screenSize.width - 242) / 2;
+          cardTop = (screenSize.height - 332) / 2 - 30;
+        }
+
         return Stack(
           fit: StackFit.expand,
           children: [
-            // Dark Camera View Simulator Background
-            Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Color(0xFF4C453C), // Warm charcoal
-                    Color(0xFF1E1A16), // Dark brownish black
-                  ],
-                ),
-              ),
-            ),
+            // Live Camera View / Dark Camera View Simulator Background
+            _isCameraInitialized && _cameraController != null
+                ? CameraPreview(_cameraController!)
+                : Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Color(0xFF4C453C), // Warm charcoal
+                          Color(0xFF1E1A16), // Dark brownish black
+                        ],
+                      ),
+                    ),
+                  ),
 
             // Simulated Camera Grid Lines (Apple style overlay)
             Opacity(
@@ -276,7 +569,12 @@ class _LensScreenState extends State<LensScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.auto_awesome, color: Color(0xFFFFDE8F), size: 18),
+                      Image.asset(
+                        'assets/images/applogo.png',
+                        width: 18,
+                        height: 18,
+                        fit: BoxFit.cover,
+                      ),
                       const SizedBox(width: 8),
                       Text(
                         'MemoryLens AR Mode'.toUpperCase(),
@@ -290,9 +588,12 @@ class _LensScreenState extends State<LensScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  const Text(
-                    'Itaas ang camera sa tapat ng mukha ng pamilya',
-                    style: TextStyle(
+                  Text(
+                    store.translate(
+                      tagalog: 'Itaas ang camera sa tapat ng mukha ng pamilya',
+                      english: 'Point camera at your family member\'s face',
+                    ),
+                    style: const TextStyle(
                       color: Color(0xFFFFFDF9),
                       fontSize: 15,
                     ),
@@ -301,167 +602,155 @@ class _LensScreenState extends State<LensScreen> {
               ),
             ),
 
-            // Orbiting Info Cards + Bounding Frame Area
-            Center(
-              child: _knownMode && activePerson != null
-                  ? Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        // The Custom Polaroid Bounding Box
-                        PolaroidFrame(
-                          person: activePerson,
-                          latestMemory: latestMemory,
-                          onTap: () => _showTimelineSheet(context, activePerson, personMemories),
-                        ),
-                        const SizedBox(height: 24),
-                        // Orbiting Information Indicators (Apple Vision Pro inspired)
-                        Wrap(
-                          spacing: 10,
-                          runSpacing: 10,
-                          alignment: WrapAlignment.center,
-                          children: [
-                            _OrbitCard(
-                              icon: Icons.star,
-                              color: const Color(0xFFCFAE68),
-                              label: activePerson.relationship,
-                            ),
-                            if (activePerson.birthday.isNotEmpty)
-                              _OrbitCard(
-                                icon: Icons.cake,
-                                color: const Color(0xFFF39C7D),
-                                label: 'Kaarawan: ${activePerson.birthday}',
+            // Pulsing target scanner overlay when no face is active
+            if (_detectedFaceRect == null)
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TweenAnimationBuilder<double>(
+                      tween: Tween(begin: 1.0, end: 1.15),
+                      duration: const Duration(seconds: 1),
+                      builder: (context, scale, child) {
+                        return Transform.scale(
+                          scale: scale,
+                          child: Container(
+                            width: 140,
+                            height: 140,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: const Color(0xFFD4A359).withValues(alpha: 0.4),
+                                width: 2,
                               ),
-                            _OrbitCard(
-                              icon: Icons.restaurant_menu,
-                              color: const Color(0xFF5FA86A),
-                              label: 'Gusto: ${activePerson.favoriteFood}',
                             ),
-                          ],
-                        ),
-                      ],
-                    )
-                  : _UnknownDetector(
-                      onRegister: () => _showRegistrationSheet(context),
-                    ),
-            ),
-
-            // Speech Prompt / Assistant Ballooon Overlay
-            if (_simulatedSpeechResponse.isNotEmpty)
-              Positioned(
-                bottom: 150,
-                left: 24,
-                right: 24,
-                child: TweenAnimationBuilder<double>(
-                  tween: Tween(begin: 0.0, end: 1.0),
-                  duration: const Duration(milliseconds: 300),
-                  builder: (context, value, child) {
-                    return Opacity(
-                      opacity: value,
-                      child: Transform.translate(
-                        offset: Offset(0, (1 - value) * 12),
-                        child: CustomCard(
-                          color: const Color(0xFFFFFDF9),
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                          child: Text(
-                            _simulatedSpeechResponse,
-                            style: const TextStyle(
-                              fontSize: 15,
-                              color: Color(0xFF383229),
-                              height: 1.4,
+                            child: Center(
+                              child: Container(
+                                width: 14,
+                                height: 14,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: const Color(0xFFD4A359).withValues(alpha: 0.25),
+                                ),
+                              ),
                             ),
                           ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        store.translate(
+                          tagalog: 'Naghahanap ng mukha...',
+                          english: 'Scanning for face...',
+                        ),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                    );
-                  },
+                    ),
+                  ],
                 ),
               ),
 
-            // Bottom Simulator Bar: Camera Switch / Mode Toggle / Voice trigger
-            Positioned(
-              bottom: 24,
-              left: 20,
-              right: 20,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // Cycle Person Simulation Button
-                  IconButton(
-                    onPressed: () {
-                      if (people.isNotEmpty) {
-                        setState(() {
-                          _activePersonIndex = (_activePersonIndex + 1) % people.length;
-                          _knownMode = true;
-                        });
-                      }
-                    },
-                    icon: const CircleAvatar(
-                      backgroundColor: Colors.black45,
-                      child: Icon(Icons.people_rounded, color: Colors.white),
-                    ),
-                    tooltip: 'Magpalit ng Kakilala',
-                  ),
-
-                  // Hey Ala-ala Wake Button (Microphone shortcut)
-                  GestureDetector(
-                    onTap: () {
-                      if (activePerson != null) {
-                        _triggerVoiceQuestion(
-                          'Sino ito?',
-                          'Siya si ${activePerson.name}, ang iyong ${activePerson.relationship}. ${activePerson.detail}',
-                        );
-                      } else {
-                        _triggerVoiceQuestion(
-                          'Sino ito?',
-                          'Hindi ko pa nakikilala ang taong ito. Maaari mo siyang irehistro gamit ang button sa gitna.',
-                        );
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFCFAE68), // Gold
-                        borderRadius: BorderRadius.circular(30),
-                        boxShadow: const [
-                          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
-                        ],
-                      ),
-                      child: Row(
+            // Orbiting Info Cards + Bounding Frame Area positioned dynamically around the detected face
+            if (_detectedFaceRect != null)
+              Positioned(
+                left: cardLeft,
+                top: cardTop,
+                width: 242,
+                child: store.people.isNotEmpty && activePerson != null
+                    ? Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.mic, color: Colors.white),
-                          const SizedBox(width: 8),
-                          Text(
-                            activePerson != null ? 'Tukuyin si ${activePerson.name}' : 'Tukuyin ito',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
+                          if (_isGeneratingMemory) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFD4A359).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: const Color(0xFFD4A359), width: 1),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFD4A359)),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    store.translate(tagalog: 'Lumilikha ng alaala...', english: 'Creating memory...'),
+                                    style: const TextStyle(
+                                      color: Color(0xFFD4A359),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
+                            const SizedBox(height: 12),
+                          ],
+                          // The Custom Polaroid Bounding Box
+                          PolaroidFrame(
+                            person: activePerson,
+                            latestMemory: latestMemory,
+                            onTap: () => _showTimelineSheet(context, activePerson, personMemories),
+                          ),
+                          const SizedBox(height: 12),
+                          // Orbiting Information Indicators (Apple Vision Pro inspired)
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            alignment: WrapAlignment.center,
+                            children: [
+                              _OrbitCard(
+                                icon: Icons.star,
+                                color: const Color(0xFFCFAE68),
+                                label: displayRelation,
+                              ),
+                              if (activePerson.birthday.isNotEmpty)
+                                _OrbitCard(
+                                  icon: Icons.cake,
+                                  color: const Color(0xFFF39C7D),
+                                  label: store.translate(
+                                    tagalog: 'Kaarawan: ${activePerson.birthday}',
+                                    english: 'Birthday: ${activePerson.birthday}',
+                                  ),
+                                ),
+                              _OrbitCard(
+                                icon: Icons.restaurant_menu,
+                                color: const Color(0xFF5FA86A),
+                                label: store.translate(
+                                    tagalog: 'Gusto: ${activePerson.favoriteFood}',
+                                    english: 'Likes: ${activePerson.favoriteFood}',
+                                ),
+                              ),
+                            ],
                           ),
                         ],
+                      )
+                    : _UnknownDetector(
+                        onRegister: () => _showRegistrationSheet(context),
                       ),
-                    ),
-                  ),
-
-                  // Unknown/Known Switcher
-                  IconButton(
-                    onPressed: () {
-                      setState(() {
-                        _knownMode = !_knownMode;
-                      });
-                    },
-                    icon: CircleAvatar(
-                      backgroundColor: _knownMode ? Colors.black45 : const Color(0xFFD26B6B),
-                      child: Icon(
-                        _knownMode ? Icons.face_unlock_rounded : Icons.face_rounded,
-                        color: Colors.white,
-                      ),
-                    ),
-                    tooltip: 'Toggle Known/Unknown Sim',
-                  ),
-                ],
               ),
-            ),
+
+
+
+            // Bottom controls removed to run purely dynamically on live face detection
           ],
         );
       },
@@ -502,7 +791,7 @@ class _OrbitCard extends StatelessWidget {
             style: const TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w700,
-              color: Color(0xFF383229),
+              color: Color(0xFF2C1E1B),
             ),
           ),
         ],
@@ -518,6 +807,7 @@ class _UnknownDetector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final store = MemoryStore.instance;
     return Container(
       width: 242,
       height: 332,
@@ -543,19 +833,22 @@ class _UnknownDetector extends StatelessWidget {
             color: Color(0xFFD26B6B), // Danger/unrecognized red
           ),
           const SizedBox(height: 16),
-          const Text(
-            'Hindi pa Kilala',
-            style: TextStyle(
+          Text(
+            store.translate(tagalog: 'Hindi pa Kilala', english: 'Unrecognized Face'),
+            style: const TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w900,
-              color: Color(0xFF383229),
+              color: Color(0xFF2C1E1B),
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'Hindi pa namin kilala ang taong ito. Irehistro sila upang maitala.',
+          Text(
+            store.translate(
+              tagalog: 'Hindi pa namin kilala ang taong ito. Irehistro sila upang maitala.',
+              english: 'We don\'t recognize this person yet. Register them to start tracking memories.',
+            ),
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 13,
               color: Color(0xFF5A5247),
               height: 1.4,
@@ -573,9 +866,9 @@ class _UnknownDetector extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
               ),
             ),
-            child: const Text(
-              'Irehistro ang Tao',
-              style: TextStyle(fontWeight: FontWeight.bold),
+            child: Text(
+              store.translate(tagalog: 'Irehistro ang Tao', english: 'Register Person'),
+              style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -678,7 +971,7 @@ class _RegistrationBottomSheetState extends State<RegistrationBottomSheet> {
               style: TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.w900,
-                color: Color(0xFF383229),
+                color: Color(0xFF2C1E1B),
               ),
             ),
             const SizedBox(height: 6),
@@ -776,7 +1069,7 @@ class _RegistrationBottomSheetState extends State<RegistrationBottomSheet> {
               style: TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.w900,
-                color: Color(0xFF383229),
+                color: Color(0xFF2C1E1B),
               ),
             ),
             const SizedBox(height: 4),

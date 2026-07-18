@@ -1,0 +1,48 @@
+# Ala-ala Implementation Tasks: Language Translation, Face Scanner & Camera Integration
+
+- [x] Configure google_fonts Package Dependency
+- [x] Configure global cormorantGaramondTextTheme inside `lib/main.dart`
+- [x] Remove inline appbar header dropdown and logout button
+- [x] Create Settings Drawer BottomSheet in `lib/widgets/app_header.dart`
+- [x] Implement clearAllMemories() database wipe helper in `lib/services/memory_store.dart`
+- [x] Wrap AppHeader in SafeArea to clear device status bar notch overlap
+- [x] Implement persistent Tagalog/English language toggles inside Settings
+- [x] Localize home headers, routines checklist items, and navigation tabs
+- [x] Create ML Face Scanner page with simulated scanning lasers and detail forms
+- [x] Bind face scanning page to camera registration actions and settings menu
+- [x] Fix Settings BottomSheet layout overflow using SingleChildScrollView and isScrollControlled
+- [x] Fix right layout overflow on memory timeline card titles in memories_screen.dart
+- [x] Localize memories_screen.dart search hint, timeline labels, and assistant bubble
+- [x] Localize family_screen.dart caregiver notes sheet, category chips, and member detail cards
+- [x] Localize lens_screen.dart camera HUD instructions, unrecognized face labels, and orbiting tags
+- [x] Configure camera package inside pubspec.yaml and platform permission manifests
+- [x] Configure google_mlkit_face_detection and set minSdk to 21
+- [x] Initialize live CameraPreview and stream frames to ML Kit face detector
+- [x] Dynamically draw target brackets and confidence labels exactly around detected faces
+- [x] Configure camera shutter capture inside Face Scanner screen
+- [x] Save local captured image path to Person model property
+- [x] Enable tracking IDs in ML Kit detector and bind to database members
+- [x] Add global floating draggable Domo AI Assistant bubble with context tips
+- [x] Extract Domo assistant card into a centered overlay modal
+- [x] Convert static Domo modal into a scrollable AI Chat Card dialog
+- [x] Connect chat input text queries dynamically to Gemini RAG askAI calls
+- [x] Strip row padding stride bytes from camera frame YUV streams into NV21 arrays
+- [x] Protect memory detail lookup from empty database StateError crashes
+- [x] Restrict bubble boundaries via double coordinate clamps
+- [x] Hide Polaroid Card by default when no face is active in AR mode
+- [x] Implement a pulsing gold scanner reticle in the center on camera view finder idle
+- [x] Loosen coordinate clamps to let card track face bounding boxes directly
+- [x] Insert "View Profile" navigation links inside timeline sheets pushing Family tab state
+- [x] Fix Domo AI Assistant button at the bottom right corner (above navigation bar capsule)
+- [x] Integrate animated slide-up transition sheet for Chat Card using AnimatedPositioned
+- [x] Add brain selector chips supporting Local, Gemini, and OpenAI model switching
+- [x] Remove memory generated SnackBar status popups from LensScreen
+- [x] Wrap Domo chat modal in a Material widget to resolve the TextField exception
+- [x] Register assets/images/ directory inside pubspec.yaml assets list
+- [x] Replace generic sparkle and assistance icons with applogo.png asset image in all headers, onboarding/login screens, and chatbot bubbles
+- [x] Draw physical transparent viewfinder window cutout inside PolaroidFrame using CustomPaint/evenOdd Path
+- [x] Center transparent viewfinder window exactly on detected face center by removing position clamps
+- [x] Remove static controls bar (Cycle Person, Wake Mic, Known/Unknown Sim) from lens_screen.dart
+- [x] Remove unused mock variables and helpers from lens_screen.dart (knownMode, activeQuestion/Answer, speechResetTimer, showVoiceQuerySheet, triggerVoiceQuestion)
+- [x] Integrate face lock tracking stabilizer to hold active registered face details securely without name flickering
+- [x] Verify compile safety and analyzer warnings

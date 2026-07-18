@@ -1,0 +1,22 @@
+# Ala-ala Implementation Tasks: Language Translation, Face Scanner & Camera Integration
+
+- [x] Configure google_fonts Package Dependency
+- [x] Configure global cormorantGaramondTextTheme inside `lib/main.dart`
+- [x] Remove inline appbar header dropdown and logout button
+- [x] Create Settings Drawer BottomSheet in `lib/widgets/app_header.dart`
+- [x] Implement clearAllMemories() database wipe helper in `lib/services/memory_store.dart`
+- [x] Wrap AppHeader in SafeArea to clear device status bar notch overlap
+- [x] Implement persistent Tagalog/English language toggles inside Settings
+- [x] Localize home headers, routines checklist items, and navigation tabs
+- [x] Create ML Face Scanner page with simulated scanning lasers and detail forms
+- [x] Bind face scanning page to camera registration actions and settings menu
+- [x] Fix Settings BottomSheet layout overflow using SingleChildScrollView and isScrollControlled
+- [x] Fix right layout overflow on memory timeline card titles in memories_screen.dart
+- [x] Localize memories_screen.dart search hint, timeline labels, and assistant bubble
+- [x] Localize family_screen.dart caregiver notes sheet, category chips, and member detail cards
+- [x] Localize lens_screen.dart camera HUD instructions, unrecognized face labels, and orbiting tags
+- [x] Configure camera package inside pubspec.yaml and platform permission manifests
+- [x] Configure google_mlkit_face_detection and set minSdk to 21
+- [x] Initialize live CameraPreview and stream frames to ML Kit face detector
+- [x] Dynamically draw target brackets and confidence labels exactly around detected faces
+- [x] Verify compile safety and analyzer warnings
