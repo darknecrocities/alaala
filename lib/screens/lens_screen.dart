@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:camera/camera.dart';
@@ -21,7 +22,6 @@ class LensScreen extends StatefulWidget {
 }
 
 class _LensScreenState extends State<LensScreen> {
-  int _activePersonIndex = 0;
   Person? _lockedPerson;
   Timer? _faceLostTimer;
 
@@ -40,12 +40,6 @@ class _LensScreenState extends State<LensScreen> {
   void initState() {
     super.initState();
     _initializeCameraAndDetector();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final store = MemoryStore.instance;
-      if (store.people.isNotEmpty) {
-        _checkAndGenerateMemory(store.people[_activePersonIndex]);
-      }
-    });
   }
 
   @override
@@ -178,21 +172,20 @@ class _LensScreenState extends State<LensScreen> {
             _faceLostTimer?.cancel();
             _faceLostTimer = null;
 
-            final store = MemoryStore.instance;
-            if (store.people.isNotEmpty) {
-              if (_lockedPerson == null) {
-                final trackingId = faces.first.trackingId ?? 0;
-                _activePersonIndex = trackingId % store.people.length;
-                _lockedPerson = store.people[_activePersonIndex];
-              }
+            // Only generate memory for the explicitly user-identified person.
+            // We do NOT auto-assign anyone — ML Kit only tells us a face exists,
+            // not who the person is.
+            if (_lockedPerson != null) {
               _checkAndGenerateMemory(_lockedPerson!);
             }
           } else {
             _detectedFaceRect = null;
-            _faceLostTimer ??= Timer(const Duration(milliseconds: 1500), () {
+            // Grace period: keep card visible for 2s after face disappears
+            _faceLostTimer ??= Timer(const Duration(milliseconds: 2000), () {
               if (mounted) {
                 setState(() {
                   _lockedPerson = null;
+                  _generatedPeople.clear(); // Allow re-generating memory next visit
                   _faceLostTimer = null;
                 });
               }
@@ -454,7 +447,8 @@ class _LensScreenState extends State<LensScreen> {
 
     if (result != null && context.mounted) {
       setState(() {
-        _activePersonIndex = MemoryStore.instance.people.length - 1;
+        _lockedPerson = result;
+        _generatedPeople.clear();
       });
       _checkAndGenerateMemory(result);
     }
@@ -667,7 +661,8 @@ class _LensScreenState extends State<LensScreen> {
                 left: cardLeft,
                 top: cardTop,
                 width: 242,
-                child: store.people.isNotEmpty && activePerson != null
+                child: activePerson != null
+                    // ── KNOWN PERSON: show full Polaroid card ──
                     ? Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -710,6 +705,34 @@ class _LensScreenState extends State<LensScreen> {
                             latestMemory: latestMemory,
                             onTap: () => _showTimelineSheet(context, activePerson, personMemories),
                           ),
+                          const SizedBox(height: 8),
+                          // Unlock button to clear the locked person
+                          GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                _lockedPerson = null;
+                                _generatedPeople.clear();
+                              });
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.black45,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.close_rounded, size: 14, color: Colors.white),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    store.translate(tagalog: 'I-clear', english: 'Clear'),
+                                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                           const SizedBox(height: 12),
                           // Orbiting Information Indicators (Apple Vision Pro inspired)
                           Wrap(
@@ -743,8 +766,18 @@ class _LensScreenState extends State<LensScreen> {
                           ),
                         ],
                       )
-                    : _UnknownDetector(
+                    // ── UNKNOWN FACE: show 'Who is this?' selector ──
+                    : _WhoIsThisSelector(
+                        people: store.people,
+                        onSelect: (person) {
+                          setState(() {
+                            _lockedPerson = person;
+                            _generatedPeople.clear();
+                          });
+                          _checkAndGenerateMemory(person);
+                        },
                         onRegister: () => _showRegistrationSheet(context),
+                        store: store,
                       ),
               ),
 
@@ -800,75 +833,167 @@ class _OrbitCard extends StatelessWidget {
   }
 }
 
-// Bounding box interface for unknown face matches
-class _UnknownDetector extends StatelessWidget {
-  const _UnknownDetector({required this.onRegister});
+// "Who is this?" picker – shown when ML Kit detects a face but we don't know who.
+// The user selects the person manually; AR then locks to that person's profile.
+class _WhoIsThisSelector extends StatelessWidget {
+  const _WhoIsThisSelector({
+    required this.people,
+    required this.onSelect,
+    required this.onRegister,
+    required this.store,
+  });
+
+  final List<Person> people;
+  final void Function(Person) onSelect;
   final VoidCallback onRegister;
+  final MemoryStore store;
 
   @override
   Widget build(BuildContext context) {
-    final store = MemoryStore.instance;
     return Container(
       width: 242,
-      height: 332,
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xECFFFDF9), // Translucent cream
-        border: Border.all(color: const Color(0xFFE9DFC8), width: 4),
+        color: const Color(0xF2FFFDF9),
         borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFFCFAE68), width: 2),
         boxShadow: const [
-          BoxShadow(
-            color: Colors.black26,
-            blurRadius: 18,
-            offset: Offset(0, 6),
-          ),
+          BoxShadow(color: Colors.black26, blurRadius: 18, offset: Offset(0, 6)),
         ],
       ),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
-            Icons.face_retouching_off_rounded,
-            size: 64,
-            color: Color(0xFFD26B6B), // Danger/unrecognized red
+          // Icon + heading
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFCFAE68).withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.face_unlock_rounded,
+              size: 36,
+              color: Color(0xFFCFAE68),
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           Text(
-            store.translate(tagalog: 'Hindi pa Kilala', english: 'Unrecognized Face'),
+            store.translate(tagalog: 'Sino ito?', english: 'Who is this?'),
             style: const TextStyle(
-              fontSize: 20,
+              fontSize: 18,
               fontWeight: FontWeight.w900,
               color: Color(0xFF2C1E1B),
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           Text(
             store.translate(
-              tagalog: 'Hindi pa namin kilala ang taong ito. Irehistro sila upang maitala.',
-              english: 'We don\'t recognize this person yet. Register them to start tracking memories.',
+              tagalog: 'Piliin ang tao mula sa listahan',
+              english: 'Select this person from your list',
             ),
             textAlign: TextAlign.center,
             style: const TextStyle(
-              fontSize: 13,
-              color: Color(0xFF5A5247),
-              height: 1.4,
+              fontSize: 12,
+              color: Color(0xFF8C7B6E),
             ),
           ),
-          const SizedBox(height: 20),
-          ElevatedButton(
-            onPressed: onRegister,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFCFAE68), // Gold
-              foregroundColor: Colors.white,
-              elevation: 0,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+          const SizedBox(height: 14),
+          // List of registered people
+          if (people.isEmpty)
+            Text(
+              store.translate(
+                tagalog: 'Walang naka-rehistro pa',
+                english: 'No registered people yet',
               ),
-            ),
-            child: Text(
-              store.translate(tagalog: 'Irehistro ang Tao', english: 'Register Person'),
-              style: const TextStyle(fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 12, color: Color(0xFF8C7B6E)),
+            )
+          else
+            ...people.map((p) => GestureDetector(
+                  onTap: () => onSelect(p),
+                  child: Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFAF7F0),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFE9DFC8), width: 1.5),
+                    ),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 18,
+                          backgroundColor: const Color(0xFFCFAE68).withValues(alpha: 0.2),
+                          backgroundImage: p.photoPath.isNotEmpty
+                              ? FileImage(File(p.photoPath))
+                              : null,
+                          child: p.photoPath.isEmpty
+                              ? Text(
+                                  p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFFCFAE68),
+                                  ),
+                                )
+                              : null,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                p.name,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF2C1E1B),
+                                ),
+                              ),
+                              Text(
+                                p.relationship,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFF8C7B6E),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_right, color: Color(0xFFCFAE68), size: 20),
+                      ],
+                    ),
+                  ),
+                )),
+          const SizedBox(height: 4),
+          // Register new person button
+          GestureDetector(
+            onTap: onRegister,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFCFAE68).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFCFAE68), width: 1.5),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.add_a_photo_rounded, color: Color(0xFFCFAE68), size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    store.translate(tagalog: 'Bagong Tao', english: 'Register New'),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFFCFAE68),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
